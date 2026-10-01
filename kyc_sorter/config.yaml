@@ -1,0 +1,76 @@
+application:
+  name: "KYC Document Sorter"
+  version: "2.0.0"
+
+input:
+  directory: "D:/KYC_Document_sorter/Source Files/Input"
+
+output:
+  directory: "D:/KYC_Document_sorter/Destination files"
+  operation: "copy"            # "copy" or "move" (default: copy for safe operation)
+  create_date_folder: false
+  kyc_folder: "KYC"
+  unknown_folder: "Unknown"
+
+processing:
+  confidence_threshold: 0.80   # Minimum confidence [0.0 - 1.0] to accept classification
+  dry_run: false              # When true: simulate classification and routing without modifying disk
+  max_workers: 4              # Maximum parallel worker processes for batch CPU processing
+  supported_extensions:
+    - ".jpg"
+
+# Watcher / Event listener settings
+watcher:
+  stability_delay_sec: 1.0     # Time (sec) between file size checks to confirm write completion
+  settle_timeout_sec: 30.0     # Maximum wait time (sec) for an incoming file to settle
+  poll_interval_sec: 0.5      # Delay between lock-check attempts
+
+ocr:
+  language: "en"
+  use_gpu: false
+  cpu_threads: 4
+
+unknown:
+  folder: "Unknown"
+  filename_suffix: "UNKNOWN"
+
+# Official document naming convention: filename suffix
+documents:
+  AADHAAR_CARD:
+    filename_suffix: "AADHAAR_CARD"
+  PAN_CARD:
+    filename_suffix: "PAN_CARD"
+  VOTER_ID:
+    filename_suffix: "VOTER_ID"
+  BANK_STATEMENT:
+    filename_suffix: "BANK_STATEMENT"
+  CKYC_CONFIRMATION:
+    filename_suffix: "CKYC_CONFIRMATION"
+  DRIVING_LICENCE:
+    filename_suffix: "DRIVING_LICENCE"
+  ELECTRICITY_BILL:
+    filename_suffix: "ELECTRICITY_BILL"
+  GAS_BILL:
+    filename_suffix: "GAS_BILL"
+  MUNICIPAL_TAX_RECEIPT:
+    filename_suffix: "MUNICIPAL_RECEIPT"
+  PHONE_BILL:
+    filename_suffix: "PHONE_BILL"
+  RATION_CARD:
+    filename_suffix: "RATION_CARD"
+  REGISTRATION_CERTIFICATE:
+    filename_suffix: "REGISTRATION_CERTIFICATE"
+  PASSPORT:
+    filename_suffix: "PASSPORT"
+  GOVT_ID:
+    filename_suffix: "GOVT_ID"
+  CKYC_DECLARATION:
+    filename_suffix: "CKYC_DECLARATION"
+  IT_RETURNS:
+    filename_suffix: "IT_RETURNS"
+  UNKNOWN:
+    filename_suffix: "UNKNOWN"
+
+security:
+  log_sensitive_text: false    # Redact raw OCR text and PII from terminal logs
+  store_raw_ocr_debug: false   # Do not write full OCR dump to CSV unless debugging

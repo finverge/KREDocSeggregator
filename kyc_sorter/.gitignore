@@ -1,0 +1,36 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# KYC documents and sensitive data
+data/input/*
+data/output/*
+!data/input/.gitkeep
+!data/output/.gitkeep
+*.jpg
+*.jpeg
+*.png
+*.tif
+*.tiff
+*.bmp
+*.pdf
+
+# Runtime logs and reports
+logs/*
+!logs/.gitkeep
+*.log
+*.csv
+
+# Environment and virtualenvs
+.env
+.venv/
+venv/
+ENV/
+
+# Build and deployment artifacts
+build/
+dist/
+*.spec
