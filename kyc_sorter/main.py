@@ -76,6 +76,12 @@ def parse_args() -> argparse.Namespace:
         help="Path to custom config.yaml file.",
     )
     parser.add_argument(
+        "-n", "--limit",
+        type=int,
+        default=None,
+        help="Limit number of documents to process in batch mode.",
+    )
+    parser.add_argument(
         "--gui",
         action="store_true",
         help="Launch the graphical desktop interface.",
@@ -96,6 +102,8 @@ def run_cli(args: argparse.Namespace) -> int:
         overrides.setdefault("processing", {})["confidence_threshold"] = args.confidence
     if args.dry_run is not None and args.dry_run:
         overrides.setdefault("processing", {})["dry_run"] = True
+    if args.limit is not None:
+        overrides.setdefault("processing", {})["limit"] = args.limit
 
     config_path = Path(args.config) if args.config else None
     config = load_config(config_path=config_path, overrides=overrides)
@@ -138,7 +146,7 @@ def run_cli(args: argparse.Namespace) -> int:
         return 0
 
     processor = BatchProcessor(config=config)
-    summary = processor.process_batch()
+    summary = processor.process_batch(limit=args.limit)
     summary.print_summary()
 
     return 0

@@ -5,6 +5,7 @@ confidence thresholds, and non-reliance on filenames.
 """
 
 import unittest
+from unittest.mock import patch
 from kyc_sorter.detector.classifier import DocumentClassifier
 from kyc_sorter.detector.templates import get_template_signatures
 
@@ -239,6 +240,44 @@ class TestDocumentClassifier(unittest.TestCase):
         self.assertEqual(res.status, "UNKNOWN")
         self.assertIn("Multiple KYC documents", res.matched_signals.get("reason", ""))
 
+    def test_multi_document_same_type_aadhaar_plus_aadhaar(self):
+        """Two different Aadhaar cards in a single image (Aadhaar + Aadhaar) must route to UNKNOWN / MULTI_DOC."""
+        text = """
+        GOVERNMENT OF INDIA
+        Unique Identification Authority of India
+        1111 2222 3333
+        Madan Ghosh
+        DOB: 01/01/1980
+        GOVERNMENT OF INDIA
+        Unique Identification Authority of India
+        4444 5555 6666
+        Kabita Ghosh
+        DOB: 05/05/1985
+        """
+        res = self.classifier.classify_text(text)
+        self.assertEqual(res.document_type, "UNKNOWN")
+        self.assertEqual(res.status, "UNKNOWN")
+        self.assertEqual(res.rejection_category, "MULTI_DOC")
+
+    def test_multi_document_same_type_pan_plus_pan(self):
+        """Two different PAN cards in a single image (PAN + PAN) must route to UNKNOWN / MULTI_DOC."""
+        text = """
+        INCOME TAX DEPARTMENT
+        GOVT OF INDIA
+        Permanent Account Number
+        ABCDE1234F
+        Madan Ghosh
+        INCOME TAX DEPARTMENT
+        GOVT OF INDIA
+        Permanent Account Number
+        XYZPK9876Q
+        Kabita Ghosh
+        """
+        res = self.classifier.classify_text(text)
+        self.assertEqual(res.document_type, "UNKNOWN")
+        self.assertEqual(res.status, "UNKNOWN")
+        self.assertEqual(res.rejection_category, "MULTI_DOC")
+
     def test_electricity_bill_classification(self):
         text = """
         TNEB POWER DISTRIBUTION
@@ -380,6 +419,63 @@ class TestDocumentClassifier(unittest.TestCase):
         res = self.classifier.classify_text(pan_text)
         self.assertEqual(res.document_type, "PAN_CARD")
 
+    def test_exact_confidence_threshold_boundary_0_80_passes(self):
+        """A document whose computed confidence is exactly 0.80 must pass threshold check (>= 0.80)."""
+        clf = DocumentClassifier(confidence_threshold=0.80)
+        pan_text = "INCOME TAX DEPARTMENT Permanent Account Number Card ABCDE1234F"
+        with patch.object(clf, "_compute_confidence", return_value=0.80):
+            res = clf.classify_text(pan_text)
+            self.assertEqual(res.document_type, "PAN_CARD")
+            self.assertEqual(res.status, "IDENTIFIED")
+            self.assertEqual(res.confidence, 0.80)
+            self.assertEqual(res.rejection_category, "KYC")
+            self.assertTrue(res.is_kyc(0.80))
+
+    def test_confidence_slightly_below_threshold_is_rejected_with_accurate_precision(self):
+        """Documents slightly below 0.80 must be rejected and logged with sufficient decimal precision."""
+        clf = DocumentClassifier(confidence_threshold=0.80)
+        pan_text = "INCOME TAX DEPARTMENT Permanent Account Number Card ABCDE1234F"
+
+        # Case A: Value 0.7999 (just below 0.80)
+        with self.assertLogs("kyc_sorter.detector.classifier", level="INFO") as log_ctx:
+            with patch.object(clf, "_compute_confidence", return_value=0.7999):
+                res = clf.classify_text(pan_text)
+                self.assertEqual(res.document_type, "UNKNOWN")
+                self.assertEqual(res.status, "UNKNOWN")
+                self.assertEqual(res.rejection_category, "LOW_CONFIDENCE")
+                self.assertEqual(res.confidence, 0.7999)
+                self.assertFalse(res.is_kyc(0.80))
+            log_output = "\n".join(log_ctx.output)
+            self.assertIn("0.7999 below threshold 0.80", log_output)
+            self.assertNotIn("0.80 below threshold 0.80", log_output)
+
+        # Case B: Float arithmetic imprecision (0.70 + 0.10 = 0.7999999999999999)
+        with self.assertLogs("kyc_sorter.detector.classifier", level="INFO") as log_ctx:
+            with patch.object(clf, "_compute_confidence", return_value=0.70 + 0.10):
+                res = clf.classify_text(pan_text)
+                self.assertEqual(res.document_type, "UNKNOWN")
+                self.assertEqual(res.status, "UNKNOWN")
+                self.assertEqual(res.rejection_category, "LOW_CONFIDENCE")
+                self.assertLess(res.confidence, 0.80)
+                self.assertFalse(res.is_kyc(0.80))
+            log_output = "\n".join(log_ctx.output)
+            self.assertNotIn("0.80 below threshold 0.80", log_output)
+
+    def test_multi_doc_logging_accurately_reflects_preserved_filename(self):
+        """Multiple KYC documents log must state 'preserving original filename' without '_UNKNOWN suffix'."""
+        multi_text = (
+            "GOVERNMENT OF INDIA Unique Identification Authority of India 9876 5432 1098 "
+            "INCOME TAX DEPARTMENT Permanent Account Number Card ABCDE1234F"
+        )
+        with self.assertLogs("kyc_sorter.detector.classifier", level="INFO") as log_ctx:
+            res = self.classifier.classify_text(multi_text)
+            self.assertEqual(res.document_type, "UNKNOWN")
+            self.assertEqual(res.rejection_category, "MULTI_DOC")
+            log_output = "\n".join(log_ctx.output)
+            self.assertIn("preserving original filename", log_output)
+            self.assertNotIn("_UNKNOWN suffix", log_output)
+
 
 if __name__ == "__main__":
     unittest.main()
+

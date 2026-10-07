@@ -1,0 +1,41 @@
+# Python virtual environment
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Environment / secrets
+.env
+.env.*
+
+# KYC input/output/test documents
+Source Files/
+Destination files/
+VLM_Test/
+Output/
+Benchmark_Destination/
+
+# Other local/private project material
+Finverge_v1/
+logs/
+scratch/
+
+# Local IDE
+.vscode/
+
+# Generated test/output files
+*.log
+qwen_test_result.txt
+testing_run.log
+
+# Local test scripts
+benchmark_performance.py
+scratch_measure_det_rec.py
+scratch_profile.py
+scratch_test_onednn.py
+scratch_test_timing.py
+test_qwen_vlm.py
+vision_test.py
+vlm_single_test.py

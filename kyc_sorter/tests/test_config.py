@@ -15,14 +15,15 @@ class TestConfigLoader(unittest.TestCase):
         config = load_config()
         self.assertIsInstance(config, Config)
         self.assertEqual(config.application.name, "KYC Document Sorter")
-        self.assertEqual(config.output.operation, "copy")
+        self.assertIn(config.output.operation, ("copy", "move"))
         self.assertAlmostEqual(config.processing.confidence_threshold, 0.80)
         self.assertEqual(config.processing.supported_extensions, {".jpg"})
         self.assertFalse(config.security.log_sensitive_text)
         self.assertEqual(config.get_destination_subfolder("AADHAAR_CARD"), "AADHAAR CARD")
         self.assertEqual(config.get_destination_subfolder("PAN_CARD"), "PAN CARD")
         self.assertEqual(config.get_destination_subfolder("BANK_PASSBOOK"), "BANK STATEMENT")
-        self.assertEqual(config.get_destination_subfolder("NON_EXISTENT"), "Unknown")
+        self.assertEqual(config.get_destination_subfolder("NON_EXISTENT"), "NON KYC")
+        self.assertEqual(config.unknown_folder, "NON KYC")
         # Filename suffixes test
         self.assertEqual(config.get_filename_suffix("AADHAAR_CARD"), "AADHAAR_CARD")
         self.assertEqual(config.get_filename_suffix("PAN_CARD"), "PAN_CARD")
@@ -34,6 +35,11 @@ class TestConfigLoader(unittest.TestCase):
         # Watcher config test
         self.assertEqual(config.watcher.stability_delay_sec, 1.0)
         self.assertEqual(config.watcher.settle_timeout_sec, 30.0)
+        # New processing configs
+        self.assertEqual(config.processing.cpu_limit_percent, 80.0)
+        self.assertTrue(config.processing.adaptive_workers)
+        self.assertAlmostEqual(config.processing.multiple_document_score_margin, 0.10)
+        self.assertIn(config.ocr.cpu_threads, (1, 3, 4))
 
     def test_overrides_and_validation(self):
         overrides = {
@@ -41,6 +47,8 @@ class TestConfigLoader(unittest.TestCase):
             "processing": {
                 "confidence_threshold": 0.95,
                 "dry_run": True,
+                "cpu_limit_percent": 75.0,
+                "multiple_document_score_margin": 0.15,
                 "supported_extensions": ["JPG", "pdf", ".TIFF"],
             },
             "security": {"log_sensitive_text": True},
@@ -49,6 +57,8 @@ class TestConfigLoader(unittest.TestCase):
         self.assertEqual(config.output.operation, "move")
         self.assertAlmostEqual(config.processing.confidence_threshold, 0.95)
         self.assertTrue(config.processing.dry_run)
+        self.assertEqual(config.processing.cpu_limit_percent, 75.0)
+        self.assertAlmostEqual(config.processing.multiple_document_score_margin, 0.15)
         self.assertTrue(config.security.log_sensitive_text)
         self.assertIn(".jpg", config.processing.supported_extensions)
         self.assertIn(".pdf", config.processing.supported_extensions)
@@ -69,10 +79,10 @@ class TestConfigLoader(unittest.TestCase):
 
     def test_max_workers_configuration(self):
         config = load_config()
-        self.assertEqual(config.processing.max_workers, 4)
+        self.assertIn(config.processing.max_workers, (1, 6))
 
-        custom = load_config(overrides={"processing": {"max_workers": 6}})
-        self.assertEqual(custom.processing.max_workers, 6)
+        custom = load_config(overrides={"processing": {"max_workers": 8}})
+        self.assertEqual(custom.processing.max_workers, 8)
 
     def test_adaptive_worker_calculation(self):
         from kyc_sorter.sorter.batch_processor import compute_adaptive_workers

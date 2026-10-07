@@ -44,6 +44,8 @@ class OutputConfig:
     create_date_folder: bool = False
     date_format: str = "%Y-%m-%d"
     kyc_folder: str = "KYC"
+    unknown_folder: str = "NON KYC"
+    generate_companion_files: bool = True
     resolved_path: Path = field(init=False)
 
     def resolve(self, base_dir: Path) -> Path:
@@ -64,7 +66,11 @@ class OutputConfig:
 class ProcessingConfig:
     confidence_threshold: float = 0.80
     dry_run: bool = False
-    max_workers: int = 4
+    max_workers: int = 6
+    cpu_limit_percent: float = 80.0
+    adaptive_workers: bool = True
+    multiple_document_score_margin: float = 0.10
+    limit: Optional[int] = None
     supported_extensions: Set[str] = field(
         default_factory=lambda: {".jpg"}
     )
@@ -117,14 +123,18 @@ DEFAULT_DOCUMENT_METADATA: Dict[str, DocumentTypeMetadata] = {
     "CKYC DECLARATION": DocumentTypeMetadata(folder="CKYC DECLARATION", filename_suffix="CKYC_DECLARATION"),
     "IT_RETURNS": DocumentTypeMetadata(folder="IT RETURNS", filename_suffix="IT_RETURNS"),
     "IT RETURNS": DocumentTypeMetadata(folder="IT RETURNS", filename_suffix="IT_RETURNS"),
-    "UNKNOWN": DocumentTypeMetadata(folder="Unknown", filename_suffix="UNKNOWN"),
+    "UNKNOWN": DocumentTypeMetadata(folder="NON KYC", filename_suffix="UNKNOWN"),
 }
 
 @dataclass
 class OCRConfig:
     language: str = "en"
     use_gpu: bool = False
-    cpu_threads: int = 4
+    cpu_threads: int = 3
+    text_detection_model_name: str = "PP-OCRv5_mobile_det"
+    text_recognition_model_name: str = "en_PP-OCRv5_mobile_rec"
+    enable_mkldnn: bool = False
+    use_angle_classification: bool = False
 
 
 @dataclass
@@ -143,7 +153,7 @@ class Config:
     ocr: OCRConfig = field(default_factory=OCRConfig)
     security: SecurityConfig = field(default_factory=SecurityConfig)
     kyc_folder: str = "KYC"
-    unknown_folder: str = "Unknown"
+    unknown_folder: str = "NON KYC"
     unknown_suffix: str = "UNKNOWN"
     documents: Dict[str, DocumentTypeMetadata] = field(default_factory=lambda: dict(DEFAULT_DOCUMENT_METADATA))
     folders: Dict[str, str] = field(
@@ -255,11 +265,14 @@ def load_config(
         create_date_folder=bool(out_data.get("create_date_folder", False)),
         date_format=str(out_data.get("date_format", "%Y-%m-%d")),
         kyc_folder=kyc_f,
+        unknown_folder=str(out_data.get("unknown_folder", "NON KYC")).strip(),
+        generate_companion_files=bool(out_data.get("generate_companion_files", True)),
     )
     out_cfg.resolve(resolved_base)
 
     # Processing section
     proc_data = raw_data.get("processing", {})
+    class_data = raw_data.get("classification", {})
     try:
         conf_thresh = float(proc_data.get("confidence_threshold", 0.80))
         conf_thresh = max(0.0, min(1.0, conf_thresh))
@@ -275,15 +288,47 @@ def load_config(
         clean_exts.add(ext_str)
 
     try:
-        max_workers = int(proc_data.get("max_workers", 4))
+        max_workers = int(proc_data.get("max_workers", 6))
         max_workers = max(1, max_workers)
     except (TypeError, ValueError):
-        max_workers = 4
+        max_workers = 6
+
+    try:
+        cpu_limit = float(proc_data.get("cpu_limit_percent", 80.0))
+        cpu_limit = max(10.0, min(100.0, cpu_limit))
+    except (TypeError, ValueError):
+        cpu_limit = 80.0
+
+    adaptive_workers = bool(proc_data.get("adaptive_workers", True))
+
+    score_margin_raw = proc_data.get(
+        "multiple_document_score_margin",
+        class_data.get("multiple_document_score_margin", 0.10),
+    )
+    try:
+        score_margin = float(score_margin_raw)
+        score_margin = max(0.0, min(1.0, score_margin))
+    except (TypeError, ValueError):
+        score_margin = 0.10
+
+    limit_raw = proc_data.get("limit")
+    limit_val: Optional[int] = None
+    if limit_raw is not None:
+        try:
+            limit_val = int(limit_raw)
+            if limit_val <= 0:
+                limit_val = None
+        except (TypeError, ValueError):
+            limit_val = None
 
     proc_cfg = ProcessingConfig(
         confidence_threshold=conf_thresh,
         dry_run=bool(proc_data.get("dry_run", False)),
         max_workers=max_workers,
+        cpu_limit_percent=cpu_limit,
+        adaptive_workers=adaptive_workers,
+        multiple_document_score_margin=score_margin,
+        limit=limit_val,
         supported_extensions=clean_exts,
     )
 
@@ -299,8 +344,12 @@ def load_config(
     ocr_data = raw_data.get("ocr", {})
     ocr_cfg = OCRConfig(
         language=str(ocr_data.get("language", "en")),
-        use_gpu=bool(ocr_data.get("use_gpu", False)),
-        cpu_threads=int(ocr_data.get("cpu_threads", 4)),
+        use_gpu=bool(ocr_data.get("use_gpu", ocr_data.get("use_cuda", False))),
+        cpu_threads=int(ocr_data.get("cpu_threads", 3)),
+        text_detection_model_name=str(ocr_data.get("text_detection_model_name", "PP-OCRv5_mobile_det")),
+        text_recognition_model_name=str(ocr_data.get("text_recognition_model_name", "en_PP-OCRv5_mobile_rec")),
+        enable_mkldnn=bool(ocr_data.get("enable_mkldnn", False)),
+        use_angle_classification=bool(ocr_data.get("use_angle_classification", False)),
     )
 
     # Security section
@@ -310,10 +359,10 @@ def load_config(
         store_raw_ocr_debug=bool(sec_data.get("store_raw_ocr_debug", False)),
     )
 
-    # Unknown settings
+    # Unknown / NON KYC settings
     unk_data = raw_data.get("unknown", {})
-    unk_folder = str(unk_data.get("folder", "Unknown"))
-    unk_suffix = str(unk_data.get("filename_suffix", "UNKNOWN"))
+    unk_folder = str(unk_data.get("folder", out_data.get("unknown_folder", "NON KYC"))).strip()
+    unk_suffix = str(unk_data.get("filename_suffix", "UNKNOWN")).strip()
 
     # Document type mappings (folders and filename suffixes)
     docs_map: Dict[str, DocumentTypeMetadata] = dict(DEFAULT_DOCUMENT_METADATA)

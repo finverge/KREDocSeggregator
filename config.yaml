@@ -3,19 +3,24 @@ application:
   version: "2.0.0"
 
 input:
-  directory: "D:/KYC_Document_sorter/Source Files/Test_Input"
+  directory: "D:\KYC_Document_sorter\VLM_Test"
 
 output:
-  directory: "D:/KYC_Document_sorter/Test_Output"
-  operation: "copy"            # "copy" or "move" (default: copy for safe operation)
+  directory: "D:/KYC_Document_sorter/Destination files"
+  operation: "move"            # "copy" or "move"
   create_date_folder: false
   kyc_folder: "KYC"
-  unknown_folder: "Unknown"
+  unknown_folder: "NON KYC"
+  generate_companion_files: true
 
 processing:
   confidence_threshold: 0.80   # Minimum confidence [0.0 - 1.0] to accept classification
   dry_run: false              # When true: simulate classification and routing without modifying disk
-  max_workers: 5           # Maximum parallel worker processes for batch CPU processing
+  max_workers: 1              # Single worker (workers=2 rejected: exceeded 80% CPU limit)
+  cpu_limit_percent: 80       # Maximum target CPU utilization percentage
+  adaptive_workers: true      # Dynamically manage worker concurrency based on system load
+  multiple_document_score_margin: 0.10  # Margin to reject competing multi-document / ambiguous predictions
+  limit: 20                   # Validation limit
   supported_extensions:
     - ".jpg"
 
@@ -28,10 +33,14 @@ watcher:
 ocr:
   language: "en"
   use_gpu: false
-  cpu_threads: 4
+  cpu_threads: 3
+  text_detection_model_name: "PP-OCRv5_mobile_det"
+  text_recognition_model_name: "en_PP-OCRv5_mobile_rec"
+  enable_mkldnn: false
+  use_angle_classification: false
 
 unknown:
-  folder: "Unknown"
+  folder: "NON KYC"
   filename_suffix: "UNKNOWN"
 
 # Official document naming convention: filename suffix

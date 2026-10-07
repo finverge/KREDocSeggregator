@@ -53,7 +53,7 @@ def main():
         print(f"ERROR: Image file not found: {image_path}", file=sys.stderr)
         sys.exit(1)
 
-    ocr_engine = OCREngine(language="en", use_gpu=False, cpu_threads=4)
+    ocr_engine = OCREngine(language="en", use_gpu=False, cpu_threads=1)
     result = ocr_engine.extract_text(image_path)
 
     print("=" * 50)

@@ -59,7 +59,7 @@ class SorterApp(tk.Tk):
 
         subtitle_lbl = tk.Label(
             header_frame,
-            text="Automatic KYC identification, verification, and segregation into KYC & Unknown folders",
+            text="Automatic KYC identification, verification, and segregation into KYC & NON KYC folders",
             font=("Segoe UI", 9),
             fg="#cbd5e0",
             bg="#1a365d",
@@ -238,11 +238,13 @@ class SorterApp(tk.Tk):
             )
             classifier = DocumentClassifier(
                 confidence_threshold=active_config.processing.confidence_threshold,
+                multiple_document_score_margin=active_config.processing.multiple_document_score_margin,
             )
             router = FileRouter(
                 output_directory=active_config.output.resolved_path,
                 folders_mapping=active_config.folders,
                 suffixes_mapping=active_config.suffixes,
+                kyc_folder=active_config.kyc_folder,
                 unknown_folder=active_config.unknown_folder,
                 unknown_suffix=active_config.unknown_suffix,
                 operation=active_config.output.operation,
@@ -329,7 +331,7 @@ class SorterApp(tk.Tk):
                 )
                 ts_now = datetime.datetime.now().strftime("%H:%M:%S")
                 self._log_message(f"[{ts_now}] [WATCHER ACTIVE] Monitoring '{in_dir}' for new KYC documents.")
-                self._log_message(f"[{ts_now}] Drop supported images (.jpg, .png, etc.) into folder to trigger automatic sorting.")
+                self._log_message(f"[{ts_now}] Drop supported images (.jpg, .JPG) into folder to trigger automatic sorting.")
             except Exception as e:
                 self.watcher_instance = None
                 messagebox.showerror("Watcher Error", f"Failed to start filesystem watcher:\n{e}")

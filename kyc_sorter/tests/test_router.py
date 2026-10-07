@@ -41,7 +41,7 @@ class TestFileRouter(unittest.TestCase):
         self.assertEqual(dest_path.parent, self.output_dir / "KYC")
 
     def test_unknown_routing_directly_to_unknown_folder(self):
-        """Unknown documents must route directly to Unknown without subfolders or dates."""
+        """Unknown documents must route directly to NON KYC without subfolders or dates and preserve original name."""
         router = FileRouter(output_directory=self.output_dir)
         src = self.base_path / "blurry_photo.png"
 
@@ -50,9 +50,9 @@ class TestFileRouter(unittest.TestCase):
             document_type="UNKNOWN",
             processing_date=self.fixed_date,
         )
-        expected = self.output_dir / "Unknown" / "blurry_photo_UNKNOWN.png"
+        expected = self.output_dir / "NON KYC" / "blurry_photo.png"
         self.assertEqual(dest_path, expected)
-        self.assertEqual(dest_path.parent, self.output_dir / "Unknown")
+        self.assertEqual(dest_path.parent, self.output_dir / "NON KYC")
 
     def test_all_16_official_document_naming_and_routing(self):
         """Verify all 16 official document types and suffixes per Section 4 & 5."""
@@ -91,9 +91,9 @@ class TestFileRouter(unittest.TestCase):
             ("IMG0015.jpg", "CKYC_DECLARATION", "_CKYC_DECLARATION", "KYC"),
             ("IMG0016.jpg", "IT RETURNS", "_IT_RETURNS", "KYC"),
             ("IMG0016.jpg", "IT_RETURNS", "_IT_RETURNS", "KYC"),
-            # Non-KYC / Unknown
-            ("IMG0020.jpg", "UNKNOWN", "_UNKNOWN", "Unknown"),
-            ("IMG0021.jpeg", "UNKNOWN", "_UNKNOWN", "Unknown"),
+            # Non-KYC / Unknown (preserves original filename, no suffix)
+            ("IMG0020.jpg", "UNKNOWN", "", "NON KYC"),
+            ("IMG0021.jpeg", "UNKNOWN", "", "NON KYC"),
         ]
 
         for filename, doc_type, expected_suffix, expected_bucket in test_cases:
@@ -132,6 +132,14 @@ class TestFileRouter(unittest.TestCase):
         (kyc_dir / "IMG0001_AADHAAR_CARD_1.jpg").write_text("file 2 content")
         dest_path2, _, _ = router.calculate_destination_path(src, "AADHAAR_CARD")
         self.assertEqual(dest_path2.name, "IMG0001_AADHAAR_CARD_2.jpg")
+
+        # Test collision deduplication for NON_KYC documents preserving original stem
+        non_kyc_dir = self.output_dir / "NON KYC"
+        non_kyc_dir.mkdir(parents=True, exist_ok=True)
+        (non_kyc_dir / "IMG0020.jpg").write_text("existing non kyc")
+        src_non = self.base_path / "IMG0020.jpg"
+        dest_non1, _, _ = router.calculate_destination_path(src_non, "UNKNOWN")
+        self.assertEqual(dest_non1.name, "IMG0020_1.jpg")
 
     def test_copy_operation(self):
         """In COPY mode, original file remains in source and copy is created in destination."""

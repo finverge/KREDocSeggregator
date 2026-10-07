@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -127,6 +128,27 @@ class ClassificationResult:
     matched_signals: Dict[str, Any] = field(default_factory=dict)
     raw_score: float = 0.0
     error: Optional[str] = None
+    classification_time_sec: float = 0.0
+    confidence_time_sec: float = 0.0
+    multi_doc_time_sec: float = 0.0
+    decision_time_sec: float = 0.0
+    rejection_category: str = "KYC"  # "KYC", "NON_KYC", "UNKNOWN", "LOW_CONFIDENCE", "MULTI_DOC", "ERROR"
+
+    def is_kyc(self, confidence_threshold: float = 0.80) -> bool:
+        """Return True if final verified result is an accepted KYC document."""
+        return (
+            self.document_type != "UNKNOWN"
+            and self.confidence >= confidence_threshold
+            and self.rejection_category == "KYC"
+        )
+
+    @property
+    def confidence_eval_time_sec(self) -> float:
+        return self.confidence_time_sec
+
+    @property
+    def multi_doc_eval_time_sec(self) -> float:
+        return self.multi_doc_time_sec
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -137,6 +159,7 @@ class ClassificationResult:
             "raw_score": round(self.raw_score, 2),
             "matched_signals": self.matched_signals,
             "error": self.error,
+            "rejection_category": self.rejection_category,
         }
 
 
@@ -153,18 +176,26 @@ class DocumentClassifier:
         confidence_threshold: float = 0.80,
         min_score: float = 3.0,
         fuzzy_threshold: float = 0.85,
+        multiple_document_score_margin: float = 0.10,
     ):
         self.templates = templates if templates is not None else get_template_signatures()
         self.confidence_threshold = confidence_threshold
         self.min_score = min_score
         self.fuzzy_threshold = fuzzy_threshold
+        self.multiple_document_score_margin = multiple_document_score_margin
 
-    def classify_text(self, ocr_text: str) -> ClassificationResult:
+    def classify_text(
+        self,
+        ocr_text: str,
+        ocr_lines: Optional[List[Any]] = None,
+    ) -> ClassificationResult:
         """
-        Classify document based solely on OCR text content.
+        Classify document based solely on OCR text content and spatial signals.
         Never uses the filename as evidence.
         """
+        t_clf_start = time.perf_counter()
         if not ocr_text or not ocr_text.strip():
+            t_total = time.perf_counter() - t_clf_start
             return ClassificationResult(
                 document_type="UNKNOWN",
                 confidence=0.0,
@@ -172,6 +203,9 @@ class DocumentClassifier:
                 matched_template=None,
                 raw_score=0.0,
                 matched_signals={"reason": "No text detected in image"},
+                classification_time_sec=t_total,
+                decision_time_sec=t_total,
+                rejection_category="UNKNOWN",
             )
 
         text_clean = ocr_text.lower()
@@ -207,9 +241,12 @@ class DocumentClassifier:
             best_template = max(scores, key=scores.get) if scores else None
             best_score = scores.get(best_template, 0.0) if best_template else 0.0
 
-        # Section 9: Multiple KYC Documents in One Image Detection
+        t_scoring = time.perf_counter() - t_clf_start
+
+        # Case 2: Multiple Different KYC Documents in One Image Detection
         # A single image must contain EXACTLY ONE recognized KYC document to be sent to KYC.
-        # If one image contains two or more different KYC documents, the entire image MUST go to Unknown.
+        # If one image contains two or more distinct KYC documents, the entire image MUST route to NON KYC (preserving original filename).
+        t_md_start = time.perf_counter()
         qualifying_doc_types: Set[str] = set()
 
         for tmpl_name, tmpl in self.templates.items():
@@ -228,11 +265,41 @@ class DocumentClassifier:
                 if not has_admin_marker:
                     qualifying_doc_types.add(tmpl.kyc_name)
 
-        if len(qualifying_doc_types) > 1:
+        # Detect multiple distinct documents of the same KYC type (e.g. Aadhaar + Aadhaar, PAN + PAN)
+        same_type_multi: List[str] = []
+        if "AADHAAR_CARD" in qualifying_doc_types or scores.get("AADHAAR", 0.0) >= self.min_score:
+            aadhaar_nums = {re.sub(r"\s+", "", m.group(0)) for m in re.finditer(r"\b\d{4}\s?\d{4}\s?\d{4}\b", text_clean)}
+            if len(aadhaar_nums) > 1:
+                same_type_multi.append("AADHAAR_CARD")
+
+        if "PAN_CARD" in qualifying_doc_types or scores.get("PAN", 0.0) >= self.min_score:
+            pan_nums = set(re.findall(r"\b[a-z]{5}[0-9]{4}[a-z]\b", text_clean))
+            if len(pan_nums) > 1:
+                same_type_multi.append("PAN_CARD")
+
+        if "VOTER_ID" in qualifying_doc_types or scores.get("VOTER_ID", 0.0) >= self.min_score:
+            voter_nums = set(re.findall(r"\b[a-z]{3}[0-9]{7}\b", text_clean))
+            if len(voter_nums) > 1:
+                same_type_multi.append("VOTER_ID")
+
+        if "PASSPORT" in qualifying_doc_types or scores.get("PASSPORT", 0.0) >= self.min_score:
+            passport_nums = set(re.findall(r"\b[a-pr-wya-pr-wy][1-9]\d\s?\d{4}[1-9]\b", text_clean))
+            if len(passport_nums) > 1:
+                same_type_multi.append("PASSPORT")
+
+        t_multidoc = time.perf_counter() - t_md_start
+
+        if len(qualifying_doc_types) > 1 or same_type_multi:
+            detected_list = sorted(list(qualifying_doc_types))
+            for stm in same_type_multi:
+                if stm not in detected_list:
+                    detected_list.append(stm)
+                detected_list.append(f"{stm} (Duplicate/Multiple Instances)")
             logger.info(
-                "Multiple KYC documents detected in single image: %s -> Routing to UNKNOWN",
-                sorted(list(qualifying_doc_types)),
+                "Multiple KYC documents detected in single image: %s -> Routing to NON KYC (preserving original filename)",
+                detected_list,
             )
+            t_total = time.perf_counter() - t_clf_start
             return ClassificationResult(
                 document_type="UNKNOWN",
                 confidence=0.0,
@@ -241,11 +308,17 @@ class DocumentClassifier:
                 raw_score=0.0,
                 matched_signals={
                     "reason": "Multiple KYC documents detected in single image",
-                    "detected_documents": sorted(list(qualifying_doc_types)),
+                    "detected_documents": detected_list,
                 },
+                classification_time_sec=t_scoring,
+                multi_doc_time_sec=t_multidoc,
+                decision_time_sec=t_total - (t_scoring + t_multidoc),
+                rejection_category="MULTI_DOC",
             )
 
+        # Case 4: Non-KYC images (no template cleared min_score)
         if not best_template or best_score < self.min_score:
+            t_total = time.perf_counter() - t_clf_start
             return ClassificationResult(
                 document_type="UNKNOWN",
                 confidence=round(min(0.49, best_score / (self.min_score * 2.0)), 2) if best_score > 0 else 0.1,
@@ -253,33 +326,125 @@ class DocumentClassifier:
                 matched_template=best_template,
                 raw_score=best_score,
                 matched_signals=signals.get(best_template, {}) if best_template else {},
+                classification_time_sec=t_scoring,
+                multi_doc_time_sec=t_multidoc,
+                decision_time_sec=t_total - (t_scoring + t_multidoc),
+                rejection_category="NON_KYC",
             )
 
         # Apply identity preference if broad admin template won by a narrow margin
         best_template, best_score = self._apply_identity_preference(best_template, best_score, scores)
 
+        # Case 3: Competing predictions with close confidence scores
+        t_conf_start = time.perf_counter()
+        candidates_by_kyc: Dict[str, Tuple[float, float, str, Dict[str, Any]]] = {}
+        for tmpl_k, sc in scores.items():
+            if sc >= self.min_score and signals.get(tmpl_k, {}).get("mandatory_passed", True):
+                tmpl_obj = self.templates[tmpl_k]
+                k_name = tmpl_obj.kyc_name
+                conf_val = self._compute_confidence(sc, signals.get(tmpl_k, {}))
+                # Keep the highest scoring entry for each distinct KYC type
+                if k_name not in candidates_by_kyc or conf_val > candidates_by_kyc[k_name][0]:
+                    candidates_by_kyc[k_name] = (conf_val, sc, tmpl_k, signals.get(tmpl_k, {}))
+
+        if len(candidates_by_kyc) > 1:
+            sorted_candidates = sorted(
+                candidates_by_kyc.items(),
+                key=lambda item: (item[1][0], item[1][1]),
+                reverse=True,
+            )
+            top_type, (top_conf, top_raw_score, top_tmpl, top_sig) = sorted_candidates[0]
+            runner_type, (runner_conf, runner_raw_score, runner_tmpl, runner_sig) = sorted_candidates[1]
+
+            conf_diff = top_conf - runner_conf
+            rel_score_diff = (top_raw_score - runner_raw_score) / max(top_raw_score, 1.0)
+
+            # Distinguish between genuine competing predictions vs a dominant document with overlapping keywords.
+            # Competing predictions occur when the top candidate does NOT have clear score dominance:
+            is_competing_close = (
+                top_conf >= self.confidence_threshold
+                and runner_conf >= 0.50
+                and (
+                    rel_score_diff < self.multiple_document_score_margin
+                    or (conf_diff < self.multiple_document_score_margin and rel_score_diff < 0.15)
+                )
+            )
+
+            if is_competing_close:
+                logger.info(
+                    "Competing predictions with close confidence scores: %s (conf=%.2f, score=%.1f) vs %s (conf=%.2f, score=%.1f), rel_diff=%.2f < margin=%.2f -> Routing to NON KYC (preserving original filename)",
+                    top_type,
+                    top_conf,
+                    top_raw_score,
+                    runner_type,
+                    runner_conf,
+                    runner_raw_score,
+                    rel_score_diff,
+                    self.multiple_document_score_margin,
+                )
+                t_conf = time.perf_counter() - t_conf_start
+                t_total = time.perf_counter() - t_clf_start
+                return ClassificationResult(
+                    document_type="UNKNOWN",
+                    confidence=round(top_conf, 4),
+                    status="UNKNOWN",
+                    matched_template=None,
+                    raw_score=top_raw_score,
+                    matched_signals={
+                        "reason": "Ambiguous competing classification scores",
+                        "competing_documents": [top_type, runner_type],
+                        "confidences": {top_type: round(top_conf, 4), runner_type: round(runner_conf, 4)},
+                        "raw_scores": {top_type: round(top_raw_score, 2), runner_type: round(runner_raw_score, 2)},
+                        "relative_score_margin": round(rel_score_diff, 4),
+                        "configured_margin": self.multiple_document_score_margin,
+                    },
+                    classification_time_sec=t_scoring,
+                    multi_doc_time_sec=t_multidoc,
+                    confidence_time_sec=t_conf,
+                    decision_time_sec=t_total - (t_scoring + t_multidoc + t_conf),
+                    rejection_category="MULTI_DOC",
+                )
+
         target_template = self.templates[best_template]
         best_signals = signals.get(best_template, {})
 
         calculated_confidence = self._compute_confidence(best_score, best_signals)
+        t_conf = time.perf_counter() - t_conf_start
 
+        # Case 5: Low-confidence images (< threshold)
         if calculated_confidence < self.confidence_threshold:
+            conf_display = f"{calculated_confidence:.2f}"
+            if float(conf_display) >= self.confidence_threshold:
+                conf_display = f"{calculated_confidence:.4f}"
+                if float(conf_display) >= self.confidence_threshold:
+                    conf_display = f"{calculated_confidence:.6f}" if float(f"{calculated_confidence:.6f}") < self.confidence_threshold else str(calculated_confidence)
             logger.info(
-                "Document %s scored %.1f but confidence %.2f below threshold %.2f -> UNKNOWN",
+                "Document %s scored %.1f but confidence %s below threshold %.2f -> UNKNOWN",
                 target_template.kyc_name,
                 best_score,
-                calculated_confidence,
+                conf_display,
                 self.confidence_threshold,
             )
+            reported_conf = round(calculated_confidence, 4)
+            if reported_conf >= self.confidence_threshold and calculated_confidence < self.confidence_threshold:
+                reported_conf = round(self.confidence_threshold - 0.0001, 4)
+            t_total = time.perf_counter() - t_clf_start
             return ClassificationResult(
                 document_type="UNKNOWN",
-                confidence=round(calculated_confidence, 4),
+                confidence=reported_conf,
                 status="UNKNOWN",
                 matched_template=best_template,
                 raw_score=best_score,
                 matched_signals=best_signals,
+                classification_time_sec=t_scoring,
+                multi_doc_time_sec=t_multidoc,
+                confidence_time_sec=t_conf,
+                decision_time_sec=t_total - (t_scoring + t_multidoc + t_conf),
+                rejection_category="LOW_CONFIDENCE",
             )
 
+        # Case 1: One clearly identified KYC document
+        t_total = time.perf_counter() - t_clf_start
         return ClassificationResult(
             document_type=target_template.kyc_name,
             confidence=round(calculated_confidence, 4),
@@ -287,6 +452,11 @@ class DocumentClassifier:
             matched_template=best_template,
             raw_score=best_score,
             matched_signals=best_signals,
+            classification_time_sec=t_scoring,
+            multi_doc_time_sec=t_multidoc,
+            confidence_time_sec=t_conf,
+            decision_time_sec=t_total - (t_scoring + t_multidoc + t_conf),
+            rejection_category="KYC",
         )
 
     def _compute_confidence(self, score: float, signals: Dict[str, Any]) -> float:

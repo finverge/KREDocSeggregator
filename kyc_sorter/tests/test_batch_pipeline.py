@@ -126,18 +126,19 @@ class TestBatchPipeline(unittest.TestCase):
         self.assertEqual(summary.counts_by_type.get("PAN_CARD", 0), 1)
         self.assertEqual(summary.counts_by_type.get("UNKNOWN", 0), 1)
 
-        # 3. Check direct folder routing (KYC and Unknown directly, NO SUBFOLDERS, NO DATE FOLDERS)
+        # 3. Check direct folder routing (KYC and NON KYC directly, NO SUBFOLDERS, NO DATE FOLDERS)
         aadhaar_file = self.output_dir / "KYC" / "aadhaar_sample_AADHAAR_CARD.jpg"
         pan_file = self.output_dir / "KYC" / "pan_sample_PAN_CARD.JPG"
-        unknown_file = self.output_dir / "Unknown" / "grocery_bill_UNKNOWN.jpg"
+        unknown_file = self.output_dir / "NON KYC" / "grocery_bill.jpg"
 
         self.assertTrue(aadhaar_file.is_file(), "Aadhaar file must exist directly in KYC folder with _AADHAAR_CARD suffix")
         self.assertTrue(pan_file.is_file(), "PAN file must exist directly in KYC folder with _PAN_CARD suffix")
-        self.assertTrue(unknown_file.is_file(), "Non-KYC file must route directly to Unknown folder with _UNKNOWN suffix")
+        self.assertTrue(unknown_file.is_file(), "Non-KYC file must route directly to NON KYC folder preserving original name")
 
         # Verify non-JPG files were NEVER copied, moved, or renamed
         self.assertFalse((self.output_dir / "KYC" / "photo_AADHAAR_CARD.png").exists())
-        self.assertFalse((self.output_dir / "Unknown" / "photo_UNKNOWN.png").exists())
+        self.assertFalse((self.output_dir / "NON KYC" / "photo.png").exists())
+        self.assertFalse((self.output_dir / "NON KYC" / "photo_UNKNOWN.png").exists())
         self.assertFalse((self.output_dir / "KYC" / "photo_AADHAAR_CARD.jpeg").exists())
 
         # 4. Check duplicate filename collision handling (prevent overwrite)
@@ -152,9 +153,9 @@ class TestBatchPipeline(unittest.TestCase):
         csv_files = list(self.output_dir.glob("*.csv")) + list(self.output_dir.rglob("*.csv"))
         self.assertEqual(len(csv_files), 0, f"No CSV reports should be created, found: {csv_files}")
 
-        # Check output folders: only KYC and Unknown
+        # Check output folders: only KYC and NON KYC
         out_subdirs = [p.name for p in self.output_dir.iterdir() if p.is_dir()]
-        self.assertEqual(sorted(out_subdirs), ["KYC", "Unknown"])
+        self.assertEqual(sorted(out_subdirs), ["KYC", "NON KYC"])
 
 
 if __name__ == "__main__":

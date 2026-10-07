@@ -283,13 +283,13 @@ class SourceFolderWatcher:
 
         except Exception as e:
             logger.error("Error processing watched file '%s': %s", file_path.name, e, exc_info=True)
-            # Route unreadable / corrupted document to Unknown if file exists
+            # Route unreadable / corrupted document to NON KYC if file exists
             try:
                 if file_path.exists() and file_path.is_file():
                     err_decision = self.processor.router.route(file_path, "UNKNOWN")
-                    logger.info("Routed failed file '%s' to Unknown: %s", file_path.name, err_decision.destination_path)
+                    logger.info("Routed failed file '%s' to NON KYC: %s", file_path.name, err_decision.destination_path)
             except Exception as routing_err:
-                logger.error("Could not route failed file '%s' to Unknown: %s", file_path.name, routing_err)
+                logger.error("Could not route failed file '%s' to NON KYC: %s", file_path.name, routing_err)
         finally:
             with self._lock:
                 self.in_progress.discard(file_path)
