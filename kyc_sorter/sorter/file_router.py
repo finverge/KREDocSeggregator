@@ -158,6 +158,7 @@ class FileRouter:
         suffixes_mapping: Optional[Dict[str, str]] = None,
         kyc_folder: str = "KYC",
         unknown_folder: str = "NON KYC",
+        unidentified_folder: str = "Unidentified_files",
         unknown_suffix: str = "",
         operation: str = "copy",
         create_date_folder: bool = False,
@@ -177,6 +178,7 @@ class FileRouter:
                 self.suffixes_mapping[k.upper()] = str(v).strip()
         self.kyc_folder = kyc_folder
         self.unknown_folder = unknown_folder
+        self.unidentified_folder = unidentified_folder
         self.unknown_suffix = unknown_suffix
         self.operation = operation.strip().lower() if operation in ("copy", "move") else "copy"
         self.create_date_folder = create_date_folder
@@ -188,12 +190,16 @@ class FileRouter:
     def resolve_folder_name(self, document_type: str) -> str:
         """Map document type to configured destination folder name."""
         doc_key = (document_type or "").strip().upper()
-        return self.folders_mapping.get(doc_key, self.unknown_folder)
+        if doc_key in ("UNIDENTIFIED", "FAILED", "ERROR", "IGNORED", ""):
+            return self.unidentified_folder
+        if doc_key in ("NON_KYC", "MULTIPLE_DOCUMENTS", "UNKNOWN"):
+            return self.unknown_folder
+        return self.folders_mapping.get(doc_key, self.unidentified_folder)
 
     def resolve_suffix(self, document_type: str) -> str:
         """Map document type to configured post-classification filename suffix."""
         doc_key = (document_type or "").strip().upper()
-        if doc_key in ("UNKNOWN", "NON_KYC", "FAILED", "IGNORED"):
+        if doc_key in ("UNIDENTIFIED", "UNKNOWN", "NON_KYC", "MULTIPLE_DOCUMENTS", "FAILED", "IGNORED", "ERROR"):
             return ""
         return self.suffixes_mapping.get(doc_key, "")
 
@@ -210,20 +216,30 @@ class FileRouter:
         Rules:
           - KYC documents: assigned document-type suffix (<STEM>_<DOCUMENT_TYPE>.<ext>)
           - NON_KYC documents: preserve original filename exactly (<STEM>.<ext>)
+          - Unidentified / Uncertain: routed to Unidentified_files with original filename (<STEM>.<ext>)
         Returns: (candidate_img, candidate_txt, candidate_json, folder_name, date_folder_str)
         """
         src = Path(source_file)
-        folder_name = self.resolve_folder_name(document_type)
         doc_key = (document_type or "").strip().upper()
+        folder_name = self.resolve_folder_name(document_type)
 
-        # Categorize directly under KYC or Unknown (No subfolders per requirements)
+        # Categorize directly under KYC, NON KYC, or Unidentified_files
+        is_unidentified = (
+            doc_key in ("UNIDENTIFIED", "FAILED", "ERROR", "IGNORED", "")
+            or (rejection_category is not None and rejection_category.upper() in ("UNIDENTIFIED", "ERROR", "LOW_CONFIDENCE"))
+        )
         is_non_kyc = (
-            doc_key in ("UNKNOWN", "NON_KYC", "FAILED", "IGNORED")
-            or folder_name.strip().upper() == self.unknown_folder.strip().upper()
-            or (rejection_category is not None and rejection_category.upper() != "KYC")
+            not is_unidentified and (
+                doc_key in ("NON_KYC", "MULTIPLE_DOCUMENTS", "UNKNOWN")
+                or (rejection_category is not None and rejection_category.upper() in ("NON_KYC", "MULTI_DOC"))
+                or folder_name.strip().upper() == self.unknown_folder.strip().upper()
+            )
         )
 
-        if is_non_kyc:
+        if is_unidentified:
+            target_dir = self.output_directory / self.unidentified_folder
+            suffix_tag = ""
+        elif is_non_kyc:
             target_dir = self.output_directory / self.unknown_folder
             suffix_tag = ""
         else:
@@ -240,14 +256,17 @@ class FileRouter:
             target_dir = target_dir / date_folder_str
 
         # Post-classification renaming:
-        # KYC: stem + "_" + suffix_tag
-        # NON_KYC: preserve original filename (stem only)
+        # KYC: stem + "_" + suffix_tag (no duplicate suffix appending)
+        # NON_KYC / UNIDENTIFIED: preserve original filename (stem only)
         stem = src.stem
         ext = src.suffix
-        if is_non_kyc or not suffix_tag:
+        if is_unidentified or is_non_kyc or not suffix_tag:
             base_name = stem
         else:
-            base_name = f"{stem}_{suffix_tag}"
+            if stem.endswith(f"_{suffix_tag}"):
+                base_name = stem
+            else:
+                base_name = f"{stem}_{suffix_tag}"
 
         candidate_img = target_dir / f"{base_name}{ext}"
         candidate_txt = target_dir / f"{base_name}.txt"
@@ -349,12 +368,18 @@ class FileRouter:
         )
 
         doc_key = (document_type or "").strip().upper()
-        is_non_kyc = (
-            doc_key in ("UNKNOWN", "NON_KYC", "FAILED", "IGNORED")
-            or folder_name.strip().upper() == self.unknown_folder.strip().upper()
-            or (rejection_category is not None and rejection_category.upper() != "KYC")
+        is_unidentified = (
+            doc_key in ("UNIDENTIFIED", "FAILED", "ERROR", "IGNORED", "")
+            or (rejection_category is not None and rejection_category.upper() in ("UNIDENTIFIED", "ERROR", "LOW_CONFIDENCE"))
         )
-        suffix_tag = "" if is_non_kyc else (self.resolve_suffix(document_type) if self.enable_renaming else "")
+        is_non_kyc = (
+            not is_unidentified and (
+                doc_key in ("NON_KYC", "MULTIPLE_DOCUMENTS", "UNKNOWN")
+                or (rejection_category is not None and rejection_category.upper() in ("NON_KYC", "MULTI_DOC"))
+                or folder_name.strip().upper() == self.unknown_folder.strip().upper()
+            )
+        )
+        suffix_tag = "" if (is_non_kyc or is_unidentified) else (self.resolve_suffix(document_type) if self.enable_renaming else "")
 
         # Check for existing companion files in source directory
         src_txt = src.with_suffix(".txt")
@@ -417,6 +442,10 @@ class FileRouter:
             # 1. Main image file movement or copy
             if self.operation == "move":
                 shutil.move(src, dest_path)
+                if not dest_path.is_file():
+                    raise RuntimeError(f"Destination file does not exist after move: {dest_path}")
+                if src.exists():
+                    raise RuntimeError(f"Source file still exists after move: {src}")
                 logger.debug("Moved image: '%s' -> '%s'", src.name, dest_path)
             else:
                 shutil.copy2(src, dest_path)

@@ -14,10 +14,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 import datetime
-from kyc_sorter.detector.classifier import DocumentClassifier
-from kyc_sorter.detector.ocr import OCREngine
 from kyc_sorter.sorter.batch_processor import BatchProcessor, BatchSummary, ProcessedItem
-from kyc_sorter.sorter.file_router import FileRouter
 from kyc_sorter.sorter.watcher import SourceFolderWatcher
 from kyc_sorter.utils.config_loader import Config, load_config
 from kyc_sorter.utils.logger import setup_logger
@@ -231,35 +228,7 @@ class SorterApp(tk.Tk):
             }
             active_config = load_config(overrides=overrides)
 
-            ocr_engine = OCREngine(
-                language=active_config.ocr.language,
-                use_gpu=active_config.ocr.use_gpu,
-                cpu_threads=active_config.ocr.cpu_threads,
-            )
-            classifier = DocumentClassifier(
-                confidence_threshold=active_config.processing.confidence_threshold,
-                multiple_document_score_margin=active_config.processing.multiple_document_score_margin,
-            )
-            router = FileRouter(
-                output_directory=active_config.output.resolved_path,
-                folders_mapping=active_config.folders,
-                suffixes_mapping=active_config.suffixes,
-                kyc_folder=active_config.kyc_folder,
-                unknown_folder=active_config.unknown_folder,
-                unknown_suffix=active_config.unknown_suffix,
-                operation=active_config.output.operation,
-                create_date_folder=active_config.output.create_date_folder,
-                create_subfolders=False,
-                date_format=active_config.output.date_format,
-                dry_run=active_config.processing.dry_run,
-            )
-
-            processor = BatchProcessor(
-                config=active_config,
-                ocr_engine=ocr_engine,
-                classifier=classifier,
-                router=router,
-            )
+            processor = BatchProcessor(config=active_config)
 
             def on_progress(current: int, total: int, item: ProcessedItem):
                 pct = int((current / total) * 100) if total > 0 else 100

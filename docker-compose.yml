@@ -1,0 +1,81 @@
+# ==============================================================================
+# Docker Compose for KYC Document Sorter (VLM-Only)
+# Supports both Batch Mode and 24/7 Watcher Mode with persistent volume mounts
+# ==============================================================================
+
+services:
+  # ----------------------------------------------------------------------------
+  # Service 1: Batch Processing Mode
+  # Runs once across all files in the input directory and exits with summary.
+  # Usage: docker compose run --rm kyc-sorter-batch
+  # ----------------------------------------------------------------------------
+  kyc-sorter-batch:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: kyc-document-sorter:vlm-latest
+    container_name: kyc_sorter_batch
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - KYC_INPUT_DIR=/data/input
+      - KYC_OUTPUT_DIR=/data/output
+      - KYC_JOURNAL_PATH=/data/journal/kyc_journal.db
+      - KYC_LOG_DIR=/data/logs
+      - KYC_VLM_ENDPOINT=${KYC_VLM_ENDPOINT:-http://host.docker.internal:11434/api/chat}
+      - KYC_VLM_MODEL=${KYC_VLM_MODEL:-qwen3-vl:4b-instruct}
+      - KYC_VLM_KEEP_ALIVE=${KYC_VLM_KEEP_ALIVE:-24h}
+      - KYC_VLM_NUM_CTX=${KYC_VLM_NUM_CTX:-8192}
+      - KYC_SINGLE_PASS_MODE=${KYC_SINGLE_PASS_MODE:-true}
+      - KYC_OPERATION=${KYC_OPERATION:-copy}
+      - KYC_MAX_WORKERS=${KYC_MAX_WORKERS:-2}
+      - KYC_BATCH_SIZE=${KYC_BATCH_SIZE:-100}
+      - KYC_DRY_RUN=${KYC_DRY_RUN:-false}
+    volumes:
+      - ${HOST_INPUT_DIR:-./data/incoming}:/data/input:rw
+      - ${HOST_OUTPUT_DIR:-./data/sorted}:/data/output:rw
+      - ${HOST_JOURNAL_DIR:-./data/journal}:/data/journal:rw
+      - ${HOST_LOG_DIR:-./data/logs}:/data/logs:rw
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: "no"
+
+  # ----------------------------------------------------------------------------
+  # Service 2: Continuous Folder Watcher Mode
+  # Runs continuously as a daemon, listening for new files dropped into input folder.
+  # Usage: docker compose up -d kyc-sorter-watcher
+  # ----------------------------------------------------------------------------
+  kyc-sorter-watcher:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: kyc-document-sorter:vlm-latest
+    container_name: kyc_sorter_watcher
+    command: ["-w"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - KYC_INPUT_DIR=/data/input
+      - KYC_OUTPUT_DIR=/data/output
+      - KYC_JOURNAL_PATH=/data/journal/kyc_journal.db
+      - KYC_LOG_DIR=/data/logs
+      - KYC_VLM_ENDPOINT=${KYC_VLM_ENDPOINT:-http://host.docker.internal:11434/api/chat}
+      - KYC_VLM_MODEL=${KYC_VLM_MODEL:-qwen3-vl:4b-instruct}
+      - KYC_VLM_KEEP_ALIVE=${KYC_VLM_KEEP_ALIVE:-24h}
+      - KYC_VLM_NUM_CTX=${KYC_VLM_NUM_CTX:-8192}
+      - KYC_SINGLE_PASS_MODE=${KYC_SINGLE_PASS_MODE:-true}
+      - KYC_OPERATION=${KYC_OPERATION:-copy}
+      - KYC_MAX_WORKERS=${KYC_MAX_WORKERS:-2}
+      - KYC_BATCH_SIZE=${KYC_BATCH_SIZE:-100}
+      - KYC_WATCHER_MAX_QUEUE=${KYC_WATCHER_MAX_QUEUE:-1000}
+      - KYC_DRY_RUN=${KYC_DRY_RUN:-false}
+    volumes:
+      - ${HOST_INPUT_DIR:-./data/incoming}:/data/input:rw
+      - ${HOST_OUTPUT_DIR:-./data/sorted}:/data/output:rw
+      - ${HOST_JOURNAL_DIR:-./data/journal}:/data/journal:rw
+      - ${HOST_LOG_DIR:-./data/logs}:/data/logs:rw
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped

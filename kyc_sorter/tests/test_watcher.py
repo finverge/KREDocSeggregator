@@ -193,7 +193,7 @@ class TestSourceFolderWatcher(unittest.TestCase):
 
         def side_effect(p: Path):
             if "failing" in p.name:
-                raise RuntimeError("Simulated OCR failure or corrupt file")
+                raise RuntimeError("Simulated VLM failure or corrupt file")
             return original_process(p)
 
         self.mock_processor.process_file = side_effect

@@ -1,0 +1,81 @@
+# ==============================================================================
+# .dockerignore for KYC Document Sorter (VLM-Only)
+# Excludes virtual environments, caches, test datasets, logs, secrets, and backups
+# ==============================================================================
+
+# Version control
+.git/
+.gitignore
+.gitattributes
+.github/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+virtualenv/
+
+# Python byte code and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Backup and temporary files
+*.bak
+*.backup
+*.old
+*.tmp
+*.temp
+*.swp
+*.swo
+
+# Local runtime logs and test output
+logs/
+*.log
+testing_run.log
+docker_err.log
+docker_out.log
+
+# SQLite database files and WAL sidecars
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Local test datasets and sample documents
+data/
+"Source Files/"
+"Destination files/"
+Benchmark_Destination/
+Output/
+Finverge_v1/
+benchmark_run/
+functional_test_run/
+scratch/
+kyc_sorter/tests/
+
+# Local benchmark and scratch scripts
+benchmark_performance.py
+test_qwen_vlm.py
+vision_test.py
+"vlm_batch_test 1.py"
+vlm_single_test.py
+run_sorter.bat
+
+# PyInstaller / Build artifacts
+build/
+dist/
+*.spec
+
+# Environment and secrets (preserve only .env.example)
+.env
+.env.*
+!.env.example

@@ -1,1 +1,1 @@
-"""Detector module for OCR and document classification."""
+"""Detector module for VLM prompts and document classification."""

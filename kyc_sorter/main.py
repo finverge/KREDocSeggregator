@@ -16,15 +16,13 @@ for p in (str(_current_dir), str(_parent_dir)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from kyc_sorter.detector.classifier import DocumentClassifier
-from kyc_sorter.detector.ocr import OCREngine
 from kyc_sorter.sorter.batch_processor import BatchProcessor
 from kyc_sorter.sorter.file_router import FileRouter
 from kyc_sorter.utils.config_loader import load_config
 from kyc_sorter.utils.logger import setup_logger
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="KYC Document Sorter — Automated multi-signal document identification & segregation."
     )
@@ -82,11 +80,80 @@ def parse_args() -> argparse.Namespace:
         help="Limit number of documents to process in batch mode.",
     )
     parser.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help="Number of concurrent worker threads for VLM processing (default: 4).",
+    )
+    parser.add_argument(
+        "--ollama-endpoint", "--endpoint",
+        type=str,
+        default=None,
+        help="Ollama API endpoint URL (e.g. http://localhost:11434/api/chat or http://ollama:11434).",
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="Vision-Language Model name (default: qwen3-vl:4b-instruct).",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=None,
+        help="VLM request timeout in seconds (default: 300).",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=None,
+        help="Chunk batch size for bounded incremental processing (default: 100).",
+    )
+    parser.add_argument(
+        "--journal",
+        type=str,
+        default=None,
+        help="Custom path to SQLite recovery journal file.",
+    )
+    parser.add_argument(
+        "--retries",
+        type=int,
+        default=None,
+        help="Max retries for transient Ollama errors (default: 3).",
+    )
+    parser.add_argument(
         "--gui",
         action="store_true",
         help="Launch the graphical desktop interface.",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--check-connection",
+        action="store_true",
+        help="Verify connection to Ollama API and confirm model availability, then exit.",
+    )
+    parser.add_argument(
+        "--single-pass",
+        action="store_true",
+        default=None,
+        help="Enable single-pass classification (unifies multi-doc detection into master classification for 2.7x speedup).",
+    )
+    parser.add_argument(
+        "--two-pass",
+        action="store_true",
+        default=None,
+        help="Force two-pass classification (separate multi-document detection call).",
+    )
+    parser.add_argument(
+        "--keep-alive",
+        type=str,
+        default=None,
+        help="Ollama model keep-alive duration in VRAM (e.g. '24h', '30m', '0', '-1').",
+    )
+
+    sanitized_argv = list(argv) if argv is not None else list(sys.argv[1:])
+    while sanitized_argv and sanitized_argv[0] in ("python", "python3", "main.py", "./main.py"):
+        sanitized_argv.pop(0)
+    return parser.parse_args(sanitized_argv)
 
 
 def run_cli(args: argparse.Namespace) -> int:
@@ -104,22 +171,77 @@ def run_cli(args: argparse.Namespace) -> int:
         overrides.setdefault("processing", {})["dry_run"] = True
     if args.limit is not None:
         overrides.setdefault("processing", {})["limit"] = args.limit
+    if getattr(args, "workers", None) is not None:
+        overrides.setdefault("processing", {})["max_workers"] = args.workers
+    if getattr(args, "ollama_endpoint", None):
+        overrides.setdefault("vlm", {})["endpoint"] = args.ollama_endpoint
+    if getattr(args, "model", None):
+        overrides.setdefault("vlm", {})["model"] = args.model
+    if getattr(args, "timeout", None) is not None:
+        overrides.setdefault("vlm", {})["timeout"] = args.timeout
+    if getattr(args, "batch_size", None) is not None:
+        overrides.setdefault("processing", {})["batch_size"] = args.batch_size
+    if getattr(args, "journal", None):
+        overrides.setdefault("processing", {})["journal_path"] = args.journal
+    if getattr(args, "retries", None) is not None:
+        overrides.setdefault("vlm", {})["max_retries"] = args.retries
+    if getattr(args, "keep_alive", None) is not None:
+        overrides.setdefault("vlm", {})["keep_alive"] = args.keep_alive
+    if getattr(args, "single_pass", None):
+        overrides.setdefault("vlm", {})["single_pass_mode"] = True
+    elif getattr(args, "two_pass", None):
+        overrides.setdefault("vlm", {})["single_pass_mode"] = False
 
     config_path = Path(args.config) if args.config else None
-    config = load_config(config_path=config_path, overrides=overrides)
+    from kyc_sorter.utils.config_loader import ConfigurationError
+    try:
+        config = load_config(config_path=config_path, overrides=overrides)
+    except ConfigurationError as err:
+        print(f"CONFIGURATION ERROR: {err}", file=sys.stderr)
+        return 1
+
+    # Optional preflight connectivity check
+    if getattr(args, "check_connection", False):
+        from kyc_sorter.utils.healthcheck import verify_ollama_connectivity
+        print(f"Testing connection to Ollama API at '{config.vlm.endpoint}' for model '{config.vlm.model}'...")
+        is_healthy, msg = verify_ollama_connectivity(
+            endpoint=config.vlm.endpoint,
+            model_name=config.vlm.model,
+            timeout=min(getattr(config.vlm, "timeout", 10), 15),
+        )
+        if is_healthy:
+            print(f"[SUCCESS] {msg}")
+            return 0
+        else:
+            print(f"[FAILURE] {msg}", file=sys.stderr)
+            return 1
+
+    import os
+    custom_log_dir = os.environ.get("KYC_LOG_DIR")
+    log_dir_path = Path(custom_log_dir) if custom_log_dir else config.output.resolved_path.parent / "logs"
 
     logger = setup_logger(
         name="kyc_sorter",
-        log_dir=config.output.resolved_path.parent / "logs",
+        log_dir=log_dir_path,
         mask_sensitive=not config.security.log_sensitive_text,
     )
 
+    workers_display = getattr(config.processing, "max_workers", 4)
+    batch_size_display = getattr(config.processing, "batch_size", 100)
+    journal_display = getattr(config.processing, "journal_path", None) or "(default: destination/kyc_journal.db)"
     print("=" * 60)
-    print(f" {config.application.name} v{config.application.version}")
+    print(f" {config.application.name} v{config.application.version} (VLM Engine)")
     print("=" * 60)
     print(f"Input Directory      : {config.input.resolved_path}")
     print(f"Output Directory     : {config.output.resolved_path}")
     print(f"Execution Mode       : {'SOURCE FOLDER EVENT WATCHER' if getattr(args, 'watch', False) else 'BATCH PROCESSING'}")
+    print(f"Pipeline Engine      : VLM ({config.vlm.model} via Ollama)")
+    print(f"Ollama Endpoint      : {config.vlm.endpoint}")
+    print(f"Request Timeout      : {config.vlm.timeout}s")
+    print(f"Target Workers       : {workers_display}")
+    print(f"Batch Chunk Size     : {batch_size_display}")
+    print(f"SQLite Journal DB    : {journal_display}")
+    print(f"Max Request Retries  : {config.vlm.max_retries}")
     print(f"Operation Mode       : {config.output.operation.upper()}")
     print(f"Dry Run (Test Mode)  : {'ENABLED' if config.processing.dry_run else 'DISABLED'}")
     print(f"Confidence Threshold : {config.processing.confidence_threshold:.0%}")

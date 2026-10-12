@@ -1,49 +1,104 @@
+# ==============================================================================
+# KYC Document Sorter (VLM Engine) - Configuration Contract
+# ==============================================================================
+# Precedence Order:
+#   1. CLI Arguments (e.g. -i, -o, --operation, --workers, --endpoint, --model)
+#   2. Environment Variables (KYC_*, OLLAMA_*)
+#   3. YAML Configuration (this file)
+#   4. Built-in Application Defaults
+# ==============================================================================
+
 application:
   name: "KYC Document Sorter"
   version: "2.0.0"
 
+# ------------------------------------------------------------------------------
+# Input & Output Directory Configuration
+# ------------------------------------------------------------------------------
+# Relative paths resolve against the project root directory.
+# Absolute paths or mounted container paths (e.g. /data/input, /data/output)
+# are fully supported and preserved without alteration.
+# Env overrides: KYC_INPUT_DIR, KYC_OUTPUT_DIR
 input:
-  directory: "D:\KYC_Document_sorter\VLM_Test"
+  directory: "Source Files/Input"
 
+# Env overrides: KYC_OUTPUT_DIR, KYC_OPERATION, KYC_CREATE_DATE_FOLDER
 output:
-  directory: "D:/KYC_Document_sorter/Destination files"
-  operation: "move"            # "copy" or "move"
-  create_date_folder: false
-  kyc_folder: "KYC"
-  unknown_folder: "NON KYC"
-  generate_companion_files: true
+  directory: "Destination files"
+  operation: "copy"            # "copy" (safe duplicate) or "move" (relocate)
+  create_date_folder: false    # If true: partitions output into YYYY-MM-DD subfolders
+  kyc_folder: "KYC"            # Subfolder for identified KYC documents
+  unknown_folder: "NON KYC"    # Subfolder for classified NON_KYC documents
+  unidentified_folder: "Unidentified_files" # Subfolder for unclassified / failed files
 
+# ------------------------------------------------------------------------------
+# Processing & Performance Concurrency Settings
+# ------------------------------------------------------------------------------
+# Env overrides: KYC_CONFIDENCE_THRESHOLD, KYC_DRY_RUN, KYC_WORKERS,
+#                KYC_CPU_LIMIT_PERCENT, KYC_CPU_THROTTLE_PERCENT, KYC_LIMIT
 processing:
   confidence_threshold: 0.80   # Minimum confidence [0.0 - 1.0] to accept classification
-  dry_run: false              # When true: simulate classification and routing without modifying disk
-  max_workers: 1              # Single worker (workers=2 rejected: exceeded 80% CPU limit)
-  cpu_limit_percent: 80       # Maximum target CPU utilization percentage
+  dry_run: false              # When true: simulate classification without disk mutations
+  max_workers: 4              # Target concurrency worker threads (bounded pool)
+  cpu_limit_percent: 80       # Maximum target CPU utilization ceiling (pauses new tasks)
+  throttle_cpu_percent: 75    # Throttle threshold percentage for backpressure sleep
   adaptive_workers: true      # Dynamically manage worker concurrency based on system load
-  multiple_document_score_margin: 0.10  # Margin to reject competing multi-document / ambiguous predictions
-  limit: 20                   # Validation limit
+  multiple_document_score_margin: 0.10  # Margin to reject competing multi-document predictions
+  limit: null                 # Optional document processing limit (integer or null)
+  batch_size: 100             # Bounded stream batch size for incremental processing
+  journal_path: null          # Path to SQLite recovery journal (defaults to <destination>/kyc_journal.db)
   supported_extensions:
     - ".jpg"
 
-# Watcher / Event listener settings
+# ------------------------------------------------------------------------------
+# Vision-Language Model (VLM) via Ollama
+# ------------------------------------------------------------------------------
+# Env overrides: KYC_VLM_ENDPOINT (or OLLAMA_ENDPOINT, OLLAMA_HOST),
+#                KYC_VLM_MODEL (or OLLAMA_MODEL),
+#                KYC_VLM_TIMEOUT (or OLLAMA_TIMEOUT),
+#                KYC_VLM_MAX_RETRIES, KYC_VLM_KEEP_ALIVE, KYC_VLM_NUM_CTX
+#
+# Keep-Alive & Residency Configuration:
+#   - keep_alive: "24h" (or "-1") keeps model weights warm in GPU VRAM, eliminating
+#     7.5s–9.5s cold-start reload penalty between documents/batches.
+#   - Hardware / Power Note: Holding model in VRAM retains ~4.27 GB of GPU memory.
+#     On multi-use machines or laptop battery power, set to a shorter interval (e.g. "30m", "5m")
+#     or "0" to unload immediately after batch completion.
+#
+# Docker / Remote Note:
+#   - For local development: http://localhost:11434/api/chat
+#   - Inside Docker container to host Ollama: http://host.docker.internal:11434/api/chat
+#   - Inside Docker compose network: http://ollama:11434/api/chat
+#   - Base URLs (e.g. http://localhost:11434) are automatically normalized to /api/chat.
+vlm:
+  model: "qwen3-vl:4b-instruct"
+  endpoint: "http://localhost:11434/api/chat"
+  timeout: 300                # HTTP request timeout in seconds
+  max_retries: 3              # Max bounded retries for transient Ollama errors (502/503/504)
+  keep_alive: "24h"           # Configurable Ollama keep-alive duration (e.g. "24h", "30m", "0", -1)
+  temperature: 0
+  num_predict: 50
+  num_ctx: 8192               # Context window (fits vision tokens + master prompt with margin; verified empirically)
+  single_pass_mode: false     # When true: unifies multi-document detection into master classification (2.7x faster)
+  image_max_dimension: 1200   # Max dimension (width or height) to resize images for VLM payload
+  image_quality: 85           # JPEG quality for VLM payload (1-100)
+
+# ------------------------------------------------------------------------------
+# Filesystem Watcher Mode Settings
+# ------------------------------------------------------------------------------
+# Env overrides: KYC_WATCHER_STABILITY_DELAY, KYC_WATCHER_SETTLE_TIMEOUT, KYC_WATCHER_POLL_INTERVAL
 watcher:
   stability_delay_sec: 1.0     # Time (sec) between file size checks to confirm write completion
-  settle_timeout_sec: 30.0     # Maximum wait time (sec) for an incoming file to settle
-  poll_interval_sec: 0.5      # Delay between lock-check attempts
-
-ocr:
-  language: "en"
-  use_gpu: false
-  cpu_threads: 3
-  text_detection_model_name: "PP-OCRv5_mobile_det"
-  text_recognition_model_name: "en_PP-OCRv5_mobile_rec"
-  enable_mkldnn: false
-  use_angle_classification: false
+  settle_timeout_sec: 30.0     # Maximum wait time (sec) for incoming file to settle
+  poll_interval_sec: 0.5       # Delay between lock-check attempts
 
 unknown:
   folder: "NON KYC"
   filename_suffix: "UNKNOWN"
 
-# Official document naming convention: filename suffix
+# ------------------------------------------------------------------------------
+# Official Document Naming Convention & Suffixes
+# ------------------------------------------------------------------------------
 documents:
   AADHAAR_CARD:
     filename_suffix: "AADHAAR_CARD"
@@ -80,6 +135,9 @@ documents:
   UNKNOWN:
     filename_suffix: "UNKNOWN"
 
+# ------------------------------------------------------------------------------
+# Privacy & Security Logging
+# ------------------------------------------------------------------------------
+# Env overrides: KYC_LOG_SENSITIVE_TEXT
 security:
-  log_sensitive_text: false    # Redact raw OCR text and PII from terminal logs
-  store_raw_ocr_debug: false   # Do not write full OCR dump to CSV unless debugging
+  log_sensitive_text: false    # Redact raw extracted text and PII from terminal logs

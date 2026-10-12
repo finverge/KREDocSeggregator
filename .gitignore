@@ -9,6 +9,7 @@ __pycache__/
 # Environment / secrets
 .env
 .env.*
+!.env.example
 
 # KYC input/output/test documents
 Source Files/
@@ -39,3 +40,25 @@ scratch_test_timing.py
 test_qwen_vlm.py
 vision_test.py
 vlm_single_test.py
+# Local databases and SQLite journal files
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Local runtime data
+data/journal/
+data/logs/
+
+# Additional standalone experiment
+"vlm_batch_test 1.py"
+
+# Temporary backup files
+*.bak
+*.bak_task8
+
+# Local test datasets - may contain personal or identity documents
+acceptance_test/
+functional_test_run/
+regression_test_suite/

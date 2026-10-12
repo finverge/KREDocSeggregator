@@ -14,6 +14,7 @@ import os
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable, Dict, Optional, Set, Tuple
 
@@ -21,6 +22,7 @@ from watchdog.events import FileCreatedEvent, FileModifiedEvent, FileMovedEvent,
 from watchdog.observers import Observer
 
 from kyc_sorter.sorter.batch_processor import BatchProcessor, ProcessedItem
+from kyc_sorter.sorter.vlm_router import route_document
 from kyc_sorter.utils.config_loader import Config, load_config
 from kyc_sorter.utils.logger import setup_logger
 
@@ -40,8 +42,12 @@ def wait_for_file_ready(
       1. File exists on disk and is a regular file.
       2. File size is greater than zero.
       3. File can be opened in binary read mode without OS sharing or write locks.
-      4. File size remains identical across stability_delay_sec.
-      5. File is verified readable again after the delay.
+      4. Safe Adaptive Stability:
+         - If file mtime is older than 2.0s and readable, verifies stability with a brief 0.05s delay.
+         - If file is newly created or actively being copied (mtime within 2.0s),
+           enforces full stability_delay_sec (default 1.0s) to detect continuing writes.
+      5. File size remains identical across the check interval.
+      6. File is verified readable again after the delay.
 
     Returns:
       True if the file is completely written and stable.
@@ -56,7 +62,9 @@ def wait_for_file_ready(
             continue
 
         try:
-            size1 = p.stat().st_size
+            st1 = p.stat()
+            size1 = st1.st_size
+            mtime1 = st1.st_mtime
         except OSError:
             time.sleep(check_interval_sec)
             continue
@@ -73,20 +81,27 @@ def wait_for_file_ready(
             time.sleep(check_interval_sec)
             continue
 
-        # Sleep stability delay to detect continuing writes/copies
-        time.sleep(stability_delay_sec)
+        # Adaptive delay: If file was modified >= 2.0s ago, it has already settled on disk.
+        # Check with a fast 0.05s delay. For active copies (< 2.0s ago), enforce full stability_delay_sec.
+        now = time.time()
+        is_older_file = (now - mtime1) >= 2.0
+        delay = 0.05 if is_older_file else stability_delay_sec
+
+        time.sleep(delay)
 
         if not p.exists() or not p.is_file():
             return False
 
         try:
-            size2 = p.stat().st_size
+            st2 = p.stat()
+            size2 = st2.st_size
+            mtime2 = st2.st_mtime
         except OSError:
             time.sleep(check_interval_sec)
             continue
 
         # If size is identical and positive, perform final verification
-        if size1 == size2 and size2 > 0:
+        if size1 == size2 and size2 > 0 and (not is_older_file or abs(mtime1 - mtime2) < 0.5):
             try:
                 with open(p, "rb") as f:
                     f.read(min(size2, 4096))
@@ -160,19 +175,33 @@ class SourceFolderWatcher:
         self.supported_extensions = self.config.processing.supported_extensions
 
         # Concurrency & duplicate prevention
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self.in_progress: Set[Path] = set()
         # Maps canonical Path -> (st_mtime, st_size)
         self.processed_files: Dict[Path, Tuple[float, int]] = {}
+        self._queued_files: Set[Path] = set()
+        self._overflow_files: Set[Path] = set()
+        self.max_queue_size: int = getattr(self.config.processing, "watcher_max_queue", 1000)
+        self._worker_pool: Optional[ThreadPoolExecutor] = None
 
         self.observer: Optional[Observer] = None
         self.is_running: bool = False
         self._csv_lock = threading.Lock()
 
+    def _get_worker_pool(self) -> ThreadPoolExecutor:
+        with self._lock:
+            if self._worker_pool is None or getattr(self._worker_pool, "_shutdown", False):
+                workers = max(1, getattr(self.config.processing, "max_workers", 4))
+                self._worker_pool = ThreadPoolExecutor(
+                    max_workers=workers,
+                    thread_name_prefix="KYCWatcherWorker",
+                )
+            return self._worker_pool
+
     def on_filesystem_event(self, path: Path):
         """
         Handle incoming event notification from filesystem watcher.
-        Performs preliminary checks before spawning safe processing task.
+        Performs preliminary checks before submitting safe processing task to bounded pool.
         """
         resolved_path = path.resolve()
 
@@ -192,8 +221,12 @@ class SourceFolderWatcher:
             return
 
         with self._lock:
-            # 1. Check if already in progress
-            if resolved_path in self.in_progress:
+            # 1. Check if already in progress, queued, or held in overflow buffer
+            if (
+                resolved_path in self.in_progress
+                or resolved_path in self._queued_files
+                or resolved_path in self._overflow_files
+            ):
                 return
 
             # 2. Check if already processed with matching signature
@@ -205,14 +238,31 @@ class SourceFolderWatcher:
                 except OSError:
                     pass
 
-        # Spawn asynchronous worker thread to avoid blocking the watchdog observer loop
-        worker = threading.Thread(
-            target=self._process_single_file_safe,
-            args=(resolved_path,),
-            daemon=True,
-            name=f"KYCWatcherWorker-{resolved_path.name}",
-        )
-        worker.start()
+            # 3. Check persistent journal to prevent re-processing across restarts/reloads
+            if hasattr(self.processor, "journal") and self.processor.journal:
+                reconciled = self.processor.journal.reconcile_file_status(
+                    resolved_path, expected_operation=self.config.output.operation
+                )
+                if isinstance(reconciled, tuple):
+                    try:
+                        st = resolved_path.stat()
+                        self.processed_files[resolved_path] = (st.st_mtime, st.st_size)
+                    except OSError:
+                        pass
+                    return
+
+            # 4. Bounded concurrency and queue backpressure
+            if len(self._queued_files) < self.max_queue_size:
+                self._queued_files.add(resolved_path)
+                pool = self._get_worker_pool()
+                pool.submit(self._process_single_file_safe, resolved_path)
+            else:
+                logger.warning(
+                    "Watcher pending queue at capacity (%d). Applying backpressure; queued '%s' to overflow buffer.",
+                    self.max_queue_size,
+                    resolved_path.name,
+                )
+                self._overflow_files.add(resolved_path)
 
     def _process_single_file_safe(self, file_path: Path):
         """
@@ -220,7 +270,7 @@ class SourceFolderWatcher:
           1. Sets in_progress lock.
           2. Waits until file write is complete and stable.
           3. Checks duplicate processing cache.
-          4. Executes OCR, Classification, and Renaming + Routing.
+          4. Executes VLM Classification and Renaming + Routing.
           5. Updates duplicate cache and CSV report.
         """
         with self._lock:
@@ -263,9 +313,20 @@ class SourceFolderWatcher:
                     logger.debug("Skipping '%s': duplicate event already processed.", file_path.name)
                     return
 
-            logger.info("File '%s' is ready. Starting local OCR extraction...", file_path.name)
+            # Verify against journal post-settle
+            if hasattr(self.processor, "journal") and self.processor.journal:
+                reconciled = self.processor.journal.reconcile_file_status(
+                    file_path, expected_operation=self.config.output.operation
+                )
+                if isinstance(reconciled, tuple):
+                    logger.debug("Skipping '%s': journal confirms file already processed.", file_path.name)
+                    with self._lock:
+                        self.processed_files[file_path] = stable_sig
+                    return
 
-            # Process file: OCR -> Classification -> Suffix Renaming -> Date Folder Routing
+            logger.info("File '%s' is ready. Starting VLM classification...", file_path.name)
+
+            # Process file: VLM Classification -> Suffix Renaming -> Folder Routing
             item = self.processor.process_file(file_path)
 
             # Mark file as processed with its stable signature
@@ -283,16 +344,34 @@ class SourceFolderWatcher:
 
         except Exception as e:
             logger.error("Error processing watched file '%s': %s", file_path.name, e, exc_info=True)
-            # Route unreadable / corrupted document to NON KYC if file exists
+            # Route unreadable / corrupted / failed document to Unidentified_files if file exists
             try:
                 if file_path.exists() and file_path.is_file():
-                    err_decision = self.processor.router.route(file_path, "UNKNOWN")
-                    logger.info("Routed failed file '%s' to NON KYC: %s", file_path.name, err_decision.destination_path)
+                    err_res = route_document(
+                        source_file=file_path,
+                        category=None,
+                        is_error=True,
+                        destination_root=self.config.output.resolved_path,
+                        dry_run=self.config.processing.dry_run,
+                        operation=self.config.output.operation,
+                    )
+                    logger.info("Routed failed file '%s' to Unidentified_files: %s", file_path.name, err_res.destination_path)
             except Exception as routing_err:
-                logger.error("Could not route failed file '%s' to NON KYC: %s", file_path.name, routing_err)
+                logger.error("Could not route failed file '%s' to Unidentified_files: %s", file_path.name, routing_err)
         finally:
             with self._lock:
                 self.in_progress.discard(file_path)
+                self._queued_files.discard(file_path)
+                # Drain from overflow buffer under backpressure
+                if self._overflow_files and len(self._queued_files) < self.max_queue_size:
+                    next_path = self._overflow_files.pop()
+                    self._queued_files.add(next_path)
+                    try:
+                        pool = self._get_worker_pool()
+                        pool.submit(self._process_single_file_safe, next_path)
+                    except Exception as drain_err:
+                        logger.error("Failed to submit drained task for '%s': %s", next_path.name, drain_err)
+                        self._queued_files.discard(next_path)
 
     def _append_csv_report(self, item: ProcessedItem) -> Optional[Path]:
         """CSV report generation is completely disabled per requirements."""
@@ -342,6 +421,10 @@ class SourceFolderWatcher:
             self.observer.stop()
             self.observer.join(timeout=5.0)
             self.observer = None
+        with self._lock:
+            if self._worker_pool:
+                self._worker_pool.shutdown(wait=False)
+                self._worker_pool = None
         self.is_running = False
         logger.info("Source folder event listener stopped.")
 
