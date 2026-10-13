@@ -20,6 +20,8 @@ from typing import Callable, Dict, Optional, Set, Tuple
 
 from watchdog.events import FileCreatedEvent, FileModifiedEvent, FileMovedEvent, FileSystemEventHandler
 from watchdog.observers import Observer
+from watchdog.observers.api import BaseObserver
+from watchdog.observers.polling import PollingObserver
 
 from kyc_sorter.sorter.batch_processor import BatchProcessor, ProcessedItem
 from kyc_sorter.sorter.vlm_router import route_document
@@ -184,7 +186,7 @@ class SourceFolderWatcher:
         self.max_queue_size: int = getattr(self.config.processing, "watcher_max_queue", 1000)
         self._worker_pool: Optional[ThreadPoolExecutor] = None
 
-        self.observer: Optional[Observer] = None
+        self.observer: Optional[BaseObserver] = None
         self.is_running: bool = False
         self._csv_lock = threading.Lock()
 
@@ -391,7 +393,14 @@ class SourceFolderWatcher:
             raise FileNotFoundError(f"Source watch directory does not exist: {self.watch_dir}")
 
         event_handler = KYCFileSystemEventHandler(self)
-        self.observer = Observer()
+        # Bind mounts from a Windows/macOS host into a Linux container do not reliably
+        # deliver filesystem events, so polling re-scans the folder on a timer instead.
+        use_polling = bool(getattr(self.config.watcher, "use_polling", False))
+        polling_interval = float(getattr(self.config.watcher, "polling_interval_sec", 5.0))
+        if use_polling:
+            self.observer = PollingObserver(timeout=polling_interval)
+        else:
+            self.observer = Observer()
         self.observer.schedule(event_handler, str(self.watch_dir), recursive=False)
         self.observer.start()
         self.is_running = True
@@ -399,6 +408,10 @@ class SourceFolderWatcher:
         logger.info("=" * 60)
         logger.info("SOURCE FOLDER EVENT LISTENER ACTIVE")
         logger.info("Monitoring Folder   : %s", self.watch_dir)
+        logger.info(
+            "Detection Mode      : %s",
+            f"POLLING (every {polling_interval:g}s)" if use_polling else "FILESYSTEM EVENTS",
+        )
         logger.info("Supported Extensions: %s", ", ".join(sorted(self.supported_extensions)))
         logger.info("Destination Root    : %s", self.config.output.resolved_path)
         logger.info("Operation Mode      : %s", self.config.output.operation.upper())

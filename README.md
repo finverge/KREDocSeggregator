@@ -198,6 +198,8 @@ Settings are resolved in this order, highest priority first:
 | `watcher.stability_delay_sec` | `KYC_WATCHER_STABILITY_DELAY` | `1.0` | Gap between size checks on a new file |
 | `watcher.settle_timeout_sec` | `KYC_WATCHER_SETTLE_TIMEOUT` | `30.0` | Give up on a file that has not settled |
 | `watcher.poll_interval_sec` | none | `0.5` | Delay between readiness checks |
+| `watcher.use_polling` | `KYC_WATCHER_USE_POLLING` | `false` (`true` in Docker Compose) | Find new files by re-scanning the folder on a timer instead of OS file events |
+| `watcher.polling_interval_sec` | `KYC_WATCHER_POLLING_INTERVAL` | `5.0` | Seconds between scans when polling is on |
 | `security.log_sensitive_text` | `KYC_LOG_SENSITIVE_TEXT` | `false` | Turn off masking in logs |
 
 Only `.jpg` files are processed by default (matched case-insensitively, so `.JPG` works). Files with other extensions are left where they are. Temporary and partial files such as `.tmp`, `.part` and `.crdownload`, and names starting with `.` or `~`, are always ignored.
@@ -218,7 +220,8 @@ The sorter refuses to start if:
 
 Every processed file is recorded in a SQLite database. Unless you set a path, it is `kyc_journal.db` in the parent folder of the destination folder (the project root with default settings).
 
-- **Copy mode:** on a re-run, a file is skipped if it is unchanged since it was recorded and its copy is still in the destination. To sort the same files again, delete the journal or point `--journal` at a new file.
+- **Copy mode:** on a re-run, a file that was routed to `KYC` or `NON KYC` is skipped if it is unchanged since it was recorded and its copy is still in the destination. To sort the same files again, delete the journal or point `--journal` at a new file.
+- **Unidentified files are retried.** A file that ended in `Unidentified_files` is processed again on the next batch run or `--process-existing` start. In copy mode each retry that fails again leaves another copy there with a `_1`, `_2` suffix.
 - **Move mode:** any supported file still present in the source folder is processed.
 - A file that was in progress when the program stopped is processed again on the next run.
 - A file whose size or modification time has changed is processed again.
@@ -270,6 +273,8 @@ The image contains the sorter only. Ollama must be running separately, on the Do
 | `HOST_OUTPUT_DIR` | `./data/sorted` | `/data/output` |
 | `HOST_JOURNAL_DIR` | `./data/journal` | `/data/journal` |
 | `HOST_LOG_DIR` | `./data/logs` | `/data/logs` |
+
+The watcher service polls the input folder every 5 seconds (`KYC_WATCHER_USE_POLLING=true`). A Windows or macOS folder mounted into a Linux container does not deliver file-change events, so without polling the watcher starts normally but never notices new files. It only picks up files that arrive after it starts; run the batch service for anything already in the folder.
 
 Inside a container, `localhost` is the container itself. Use `http://host.docker.internal:11434` (the default) for Ollama on the host, or the address of a remote Ollama server. The container runs as a non-root user (UID 10001), so the mounted folders must be writable by it. The containers run in single-pass mode with 2 workers unless `.env` says otherwise; `.env.example` sets 4 workers.
 

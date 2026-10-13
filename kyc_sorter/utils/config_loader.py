@@ -195,6 +195,8 @@ class WatcherConfig:
     stability_delay_sec: float = 1.0
     settle_timeout_sec: float = 30.0
     poll_interval_sec: float = 0.5
+    use_polling: bool = False
+    polling_interval_sec: float = 5.0
 
 
 @dataclass
@@ -488,6 +490,16 @@ def _apply_env_overrides(raw_data: Dict[str, Any]) -> None:
         except ValueError:
             raise ConfigurationError(f"Invalid KYC_WATCHER_SETTLE_TIMEOUT: '{env['KYC_WATCHER_SETTLE_TIMEOUT']}'")
 
+    # Polling fallback for mounts that do not deliver filesystem events
+    if "KYC_WATCHER_USE_POLLING" in env:
+        raw_data.setdefault("watcher", {})["use_polling"] = _parse_bool(env["KYC_WATCHER_USE_POLLING"])
+
+    if "KYC_WATCHER_POLLING_INTERVAL" in env:
+        try:
+            raw_data.setdefault("watcher", {})["polling_interval_sec"] = float(env["KYC_WATCHER_POLLING_INTERVAL"])
+        except ValueError:
+            raise ConfigurationError(f"Invalid KYC_WATCHER_POLLING_INTERVAL: '{env['KYC_WATCHER_POLLING_INTERVAL']}'")
+
     # Security settings
     if "KYC_LOG_SENSITIVE_TEXT" in env:
         raw_data.setdefault("security", {})["log_sensitive_text"] = _parse_bool(env["KYC_LOG_SENSITIVE_TEXT"])
@@ -586,6 +598,8 @@ def validate_config(config: Config) -> None:
         raise ConfigurationError("Watcher settle_timeout_sec must be greater than 0.")
     if config.watcher.poll_interval_sec <= 0:
         raise ConfigurationError("Watcher poll_interval_sec must be greater than 0.")
+    if config.watcher.polling_interval_sec <= 0:
+        raise ConfigurationError("Watcher polling_interval_sec must be greater than 0.")
 
 
 def load_config(
@@ -799,6 +813,8 @@ def load_config(
         stability_delay_sec=float(watch_data.get("stability_delay_sec", 1.0)),
         settle_timeout_sec=float(watch_data.get("settle_timeout_sec", 30.0)),
         poll_interval_sec=float(watch_data.get("poll_interval_sec", 0.5)),
+        use_polling=_parse_bool(watch_data.get("use_polling", False)),
+        polling_interval_sec=float(watch_data.get("polling_interval_sec", 5.0)),
     )
 
     # Security section

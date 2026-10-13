@@ -214,6 +214,33 @@ class TestSourceFolderWatcher(unittest.TestCase):
         self.watcher.stop()
         self.assertFalse(self.watcher.is_running)
 
+    def test_event_observer_used_by_default(self):
+        """Without use_polling the watcher keeps the native filesystem-event observer."""
+        from watchdog.observers.polling import PollingObserver
+
+        self.watcher.start(process_existing=False)
+        self.assertNotIsInstance(self.watcher.observer, PollingObserver)
+
+    def test_polling_mode_detects_new_file(self):
+        """With use_polling enabled a file dropped after startup is found by the timed re-scan."""
+        from watchdog.observers.polling import PollingObserver
+
+        self.config.watcher.use_polling = True
+        self.config.watcher.polling_interval_sec = 0.2
+
+        self.watcher.start(process_existing=False)
+        self.assertIsInstance(self.watcher.observer, PollingObserver)
+
+        dropped = self.input_dir / "IMG0100.jpg"
+        dropped.write_bytes(b"\xFF\xD8\xFF" + b"polled image data" * 30)
+
+        deadline = time.time() + 10.0
+        while time.time() < deadline and "IMG0100.jpg" not in self.mock_processor.processed_calls:
+            time.sleep(0.1)
+
+        self.assertEqual(self.mock_processor.processed_calls.count("IMG0100.jpg"), 1)
+        self.assertTrue((self.output_dir / "KYC" / "IMG0100_PAN_CARD.jpg").is_file())
+
 
 if __name__ == "__main__":
     unittest.main()

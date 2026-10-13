@@ -91,6 +91,10 @@ watcher:
   stability_delay_sec: 1.0     # Time (sec) between file size checks to confirm write completion
   settle_timeout_sec: 30.0     # Maximum wait time (sec) for incoming file to settle
   poll_interval_sec: 0.5       # Delay between lock-check attempts
+  # Env overrides: KYC_WATCHER_USE_POLLING, KYC_WATCHER_POLLING_INTERVAL
+  use_polling: false           # true: re-scan the folder on a timer instead of relying on OS file events.
+                               # Needed when the input folder is a Windows/macOS path mounted into Docker.
+  polling_interval_sec: 5.0    # Seconds between folder scans when use_polling is true
 
 unknown:
   folder: "NON KYC"

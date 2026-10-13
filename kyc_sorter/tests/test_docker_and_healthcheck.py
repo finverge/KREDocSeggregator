@@ -113,3 +113,24 @@ class TestDockerConfiguration:
         assert cfg.vlm.model == "qwen3-vl:4b-instruct"
         assert cfg.processing.max_workers == 6
         assert cfg.processing.batch_size == 50
+
+    def test_watcher_polling_defaults_off(self, tmp_path):
+        cfg = load_config(base_dir=tmp_path)
+        assert cfg.watcher.use_polling is False
+        assert cfg.watcher.polling_interval_sec == 5.0
+
+    def test_watcher_polling_environment_overrides(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KYC_WATCHER_USE_POLLING", "true")
+        monkeypatch.setenv("KYC_WATCHER_POLLING_INTERVAL", "2.5")
+
+        cfg = load_config(base_dir=tmp_path)
+
+        assert cfg.watcher.use_polling is True
+        assert cfg.watcher.polling_interval_sec == 2.5
+
+    def test_watcher_polling_interval_must_be_positive(self, tmp_path, monkeypatch):
+        from kyc_sorter.utils.config_loader import ConfigurationError
+
+        monkeypatch.setenv("KYC_WATCHER_POLLING_INTERVAL", "0")
+        with pytest.raises(ConfigurationError):
+            load_config(base_dir=tmp_path)

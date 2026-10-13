@@ -70,6 +70,10 @@ services:
       - KYC_MAX_WORKERS=${KYC_MAX_WORKERS:-2}
       - KYC_BATCH_SIZE=${KYC_BATCH_SIZE:-100}
       - KYC_WATCHER_MAX_QUEUE=${KYC_WATCHER_MAX_QUEUE:-1000}
+      # Polling is on by default here: a host folder mounted from Windows/macOS does not
+      # deliver file events into the container. Set to false on a native Linux host.
+      - KYC_WATCHER_USE_POLLING=${KYC_WATCHER_USE_POLLING:-true}
+      - KYC_WATCHER_POLLING_INTERVAL=${KYC_WATCHER_POLLING_INTERVAL:-5}
       - KYC_DRY_RUN=${KYC_DRY_RUN:-false}
     volumes:
       - ${HOST_INPUT_DIR:-./data/incoming}:/data/input:rw
